@@ -1,0 +1,59 @@
+{
+  "name": "alexa-mcp",
+  "version": "0.1.0",
+  "description": "MCP server to audit and clean up Amazon Alexa: list/inspect/delete routines, list and delete smart-home devices (orphan cleanup), scenes and activity history. Built on alexa-remote2.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Sascha Nordquist (https://github.com/snordquist)",
+  "homepage": "https://github.com/snordquist/alexa-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snordquist/alexa-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/snordquist/alexa-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "alexa",
+    "amazon-alexa",
+    "smart-home",
+    "matter",
+    "home-automation",
+    "cleanup",
+    "audit",
+    "routines",
+    "alexa-remote2"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "alexa-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "ARCHITECTURE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "doctor": "npm run build && node dist/doctor.js",
+    "auth": "npm run build && node dist/auth-cli.js",
+    "smoke": "npm run build && node dist/smoke.js",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "alexa-remote2": "^8.1.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

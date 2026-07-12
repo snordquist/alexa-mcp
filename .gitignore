@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.auth/
+*.log
+.DS_Store
+.env
+.env.*
+*.tgz
