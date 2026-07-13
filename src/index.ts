@@ -60,6 +60,25 @@ function flattenAppliances(root: unknown): any[] {
   return [...m.values()];
 }
 
+/** Collects all device-target ids referenced by a routine's action sequence. */
+function collectRoutineTargets(routine: any): { target: string; op: string }[] {
+  const out: { target: string; op: string }[] = [];
+  const walk = (n: any) => {
+    if (!n || typeof n !== "object") return;
+    if (String(n["@type"] || "").endsWith("OpaquePayloadOperationNode")) {
+      const p = n.operationPayload || {};
+      if (p.target) out.push({ target: p.target, op: (p.operations || []).map((o: any) => o.type).join(",") || n.type });
+    }
+    for (const k of ["startNode", "nodesToExecute", "nodes"]) {
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(walk);
+      else if (v) walk(v);
+    }
+  };
+  walk(routine?.sequence?.startNode);
+  return out;
+}
+
 const server = new McpServer({ name: "alexa-mcp", version: "0.1.0" });
 
 // -- Read tools -------------------------------------------------------------
@@ -221,7 +240,8 @@ server.registerTool(
         friendlyName: a.friendlyName,
         manufacturerName: a.manufacturerName,
         source: String(a.applianceId).split("_")[0],
-        entityId: /^SKILL/.test(a.applianceId)
+        entityId: a.entityId,
+        haEntityId: /^SKILL/.test(a.applianceId)
           ? (a.friendlyDescription || "").replace(/ via .*$/, "").trim()
           : undefined,
         reachability: a.applianceNetworkState?.reachability,
@@ -235,24 +255,131 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "alexa_audit_broken_references",
+  {
+    title: "Audit routines for broken references",
+    description:
+      "Read-only. Scans every routine's action targets and reports any that point to a device, " +
+      "scene or group that no longer exists (dangling references — e.g. after a device was " +
+      "deleted). Catches routines silently broken by cleanup.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const alexa = await getAlexa();
+      const [devRaw, ents, groups, routines] = await Promise.all([
+        call<any>((cb) => alexa.getSmarthomeDevices(cb)),
+        call<any>((cb) => alexa.getSmarthomeEntities(cb)),
+        call<any>((cb) => alexa.getSmarthomeGroups(cb)),
+        call<any>((cb) => alexa.getAutomationRoutines(2000, cb)),
+      ]);
+
+      // Build the universe of valid target ids: appliances (applianceId +
+      // entityId), smart-home entities, and groups.
+      const valid = new Set<string>();
+      for (const a of flattenAppliances(devRaw)) {
+        if (a.applianceId) valid.add(a.applianceId);
+        if (a.entityId) valid.add(a.entityId);
+      }
+      for (const e of Array.isArray(ents) ? ents : []) {
+        for (const k of ["id", "entityId", "applianceId"]) if (e?.[k]) valid.add(e[k]);
+      }
+      for (const g of groups?.applianceGroups ?? []) {
+        for (const k of ["groupId", "entityId", "applianceId", "id"]) if (g?.[k]) valid.add(g[k]);
+      }
+
+      // Targets that are placeholders / skill ids are not device references.
+      const isSpecial = (t?: string) => !t || /^ALEXA_|CURRENT|^amzn1\./i.test(t);
+      const collectTargets = (r: any) => {
+        const out: { target: string; op: string }[] = [];
+        const walk = (n: any) => {
+          if (!n || typeof n !== "object") return;
+          if (String(n["@type"] || "").endsWith("OpaquePayloadOperationNode")) {
+            const p = n.operationPayload || {};
+            if (p.target) {
+              out.push({ target: p.target, op: (p.operations || []).map((o: any) => o.type).join(",") || n.type });
+            }
+          }
+          for (const k of ["startNode", "nodesToExecute", "nodes"]) {
+            const v = n[k];
+            if (Array.isArray(v)) v.forEach(walk);
+            else if (v) walk(v);
+          }
+        };
+        walk(r.sequence?.startNode);
+        return out;
+      };
+
+      const rList = Array.isArray(routines) ? routines : [];
+      const broken = [];
+      for (const r of rList) {
+        const dangling = collectTargets(r).filter((t) => !isSpecial(t.target) && !valid.has(t.target));
+        if (dangling.length) {
+          broken.push({ name: r.name, automationId: r.automationId, status: r.status, dangling });
+        }
+      }
+      return ok({
+        routinesTotal: rList.length,
+        healthy: rList.length - broken.length,
+        brokenCount: broken.length,
+        broken,
+      });
+    } catch (e: any) {
+      return fail(hint(e));
+    }
+  },
+);
+
 // -- Write tools (gated) ----------------------------------------------------
 if (ALLOW_WRITE) {
   server.registerTool(
     "alexa_delete_smarthome_device",
     {
-      title: "Delete a smart-home device",
+      title: "Delete a smart-home device (reference-safe)",
       description:
-        "Deletes a smart-home device (DELETE /api/phoenix/appliance/{id}). Used to clean up " +
-        "orphaned devices. NOTE: the applianceId must be URL-encoded (it contains #/=), " +
-        "otherwise the DELETE is a silent no-op — done automatically here. Requires confirm:true.",
+        "Deletes a smart-home device (DELETE /api/phoenix/appliance/{id}) to clean up orphans. " +
+        "SAFETY: refuses if the device is referenced by a routine or group (pass force:true to " +
+        "override) and verifies afterwards that it is actually gone. The applianceId is " +
+        "URL-encoded automatically (it contains #/=), otherwise the DELETE is a silent no-op. " +
+        "Requires confirm:true.",
       inputSchema: {
         applianceId: z.string(),
         confirm: z.literal(true),
+        force: z.boolean().optional(),
       },
     },
-    async ({ applianceId }) => {
+    async ({ applianceId, force }) => {
       try {
         const alexa = await getAlexa();
+
+        // Resolve the device (to also match by its entityId, which is what
+        // routines reference) and run the reference check.
+        const before = flattenAppliances(await call((cb) => alexa.getSmarthomeDevices(cb)));
+        const dev = before.find((a) => a.applianceId === applianceId);
+        const entityId: string | undefined = dev?.entityId;
+        const ids = new Set([applianceId, entityId].filter(Boolean) as string[]);
+
+        const [routines, groups] = await Promise.all([
+          call<any>((cb) => alexa.getAutomationRoutines(2000, cb)),
+          call<any>((cb) => alexa.getSmarthomeGroups(cb)),
+        ]);
+        const refRoutines = (Array.isArray(routines) ? routines : [])
+          .filter((r) => collectRoutineTargets(r).some((t) => ids.has(t.target)))
+          .map((r) => ({ name: r.name, automationId: r.automationId }));
+        const refGroups = (groups?.applianceGroups ?? [])
+          .filter((g: any) => [...ids].some((id) => JSON.stringify(g).includes(id)))
+          .map((g: any) => ({ name: g.name, id: g.groupId ?? g.entityId ?? g.applianceId }));
+
+        if ((refRoutines.length || refGroups.length) && !force) {
+          return fail(
+            `Refusing to delete "${dev?.friendlyName ?? applianceId}": still referenced by ` +
+              `${refRoutines.length} routine(s) and ${refGroups.length} group(s). Deleting would ` +
+              `break them. Pass force:true to override.\n` +
+              `routines: ${JSON.stringify(refRoutines)}\ngroups: ${JSON.stringify(refGroups)}`,
+          );
+        }
+
         const path = `/api/phoenix/appliance/${encodeURIComponent(applianceId)}`;
         const result = await new Promise<any>((resolve, reject) => {
           (alexa as any).httpsGet(
@@ -262,10 +389,20 @@ if (ALLOW_WRITE) {
             { method: "DELETE" },
           );
         });
-        const success = result?.success === true;
-        return success
-          ? ok({ deleted: applianceId, result })
-          : fail(`DELETE returned no success flag: ${JSON.stringify(result)}`);
+
+        // Verify: re-query and confirm the device is actually gone.
+        const after = flattenAppliances(await call((cb) => alexa.getSmarthomeDevices(cb)));
+        const stillThere = after.some((a) => a.applianceId === applianceId);
+
+        return ok({
+          deleted: applianceId,
+          friendlyName: dev?.friendlyName,
+          apiSuccess: result?.success === true,
+          verifiedGone: !stillThere,
+          note: stillThere ? "device still present after delete (may have respawned / no-op)" : undefined,
+          wasReferenced: { routines: refRoutines, groups: refGroups },
+          forced: !!force,
+        });
       } catch (e: any) {
         return fail(hint(e));
       }

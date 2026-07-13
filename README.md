@@ -95,9 +95,10 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_list_scenes` | Smart-home entities incl. scenes | no |
 | `alexa_get_activity` | Activity history (customer-history-records) | no |
 | `alexa_list_smarthome_devices` | Smart-home devices with source (skill/Matter) + entity id — find orphans | no |
+| `alexa_audit_broken_references` | Find routines whose action targets a device/scene/group that no longer exists | no |
 | `alexa_trigger_routine` | Execute a routine | **yes** |
 | `alexa_delete_routine` | Delete a routine (endpoint unverified — see limitations) | **yes** |
-| `alexa_delete_smarthome_device` | Delete a smart-home device (orphan cleanup) | **yes** |
+| `alexa_delete_smarthome_device` | Delete a smart-home device (orphan cleanup) — refuses if referenced by a routine/group unless `force`, and verifies removal | **yes** |
 
 Write tools are only registered when `ALEXA_MCP_ALLOW_WRITE=1`, and each destructive call also
 requires an explicit `confirm: true` argument.
