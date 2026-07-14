@@ -71,10 +71,75 @@ Notes:
   `.sequence` as a `PREVIEW` behavior on a target Echo — so a valid device serial is required.
 - **`getActivities`/`getHistory` were removed in `alexa-remote2` v8** → use
   `getCustomerHistoryRecords`.
-- **There is no routine-delete method** in the library and no documented endpoint. The tool
-  attempts `DELETE /api/behaviors/v2/automations/{id}` via the generic `httpsGet(…, {method:
-  'DELETE'})` escape hatch, but this is **unverified** — capture the real request via browser
-  DevTools before relying on it.
+
+### Routine write API — create / update / delete (reverse-engineered)
+
+No open-source library implements these; they were recovered by decompiling the Alexa Android
+app (routines live in a React Native **Hermes bytecode** bundle, disassembled with `hermes-dec`).
+**Note the path is the non-`v2` `/api/behaviors/automations`** — the `v2` path is GET-only (POST
+to it returns 404).
+
+| Op | Method + path |
+|---|---|
+| Create | `POST /api/behaviors/automations` |
+| Update | `PUT /api/behaviors/automations/{behaviorId}` |
+| Delete | `DELETE /api/behaviors/automations/{behaviorId}` |
+| Get one | `GET /api/behaviors/automations/{automationId}` |
+| Validate an action payload | `POST /api/behaviors/operation/validate` |
+
+`behaviorId` == `automationId`. Header `Routines-Version: <client-version>` is attached to writes
+(plus `Content-Type: application/json`).
+
+**The write body is NOT the read object.** It is a flat object whose sub-fields are **JSON
+strings** with different key names (from the app's `Automation.serialize()`):
+
+```jsonc
+{
+  "name": "…",
+  "status": "ENABLED",              // | DISABLED
+  "triggerJson":     "<JSON string of trigger.serialize()>",
+  "triggerJsonList": ["<JSON string>", …],
+  "sequenceJson":    "<JSON string of sequence.serialize()>"
+  // optional (all stringified): conditionJson, tags, presentationDataList, personId, experience, groupId, identifiers
+  // CREATE: omit behaviorId (server assigns amzn1.alexa.automation.<uuid>)
+  // UPDATE: include behaviorId (also in the path)
+}
+```
+
+- `trigger.serialize()` → `{"@type":"com.amazon.alexa.behaviors.model.Trigger","id":null,"skillId","type","payload"}`
+  where **`payload` is itself a JSON STRING** (double-encoded). For a CustomUtterance trigger the
+  decoded payload is `{"@type":"…CustomUtteranceTriggerPayload","locale","marketplaceId","utterance","utterances","customerId","person"}`.
+- `sequence.serialize()` → `{"@type":"…Sequence","startNode": <node>}`; 1 action → `startNode` is
+  the action node directly, ≥2 → `{"@type":"…SerialNode","nodesToExecute":[…]}`, 0 → a NOOP node.
+- action node → `{"@type":"…OpaquePayloadOperationNode","type","skillId","operationPayload": <OBJECT, not stringified>,"context":null}`.
+  `presentationDataList` is optional (only when requiresInput/warning/benefit set).
+- The `operationPayload` must be **server-normalized** — post the action to
+  `/api/behaviors/operation/validate` and embed the returned `operationPayload` object.
+
+**Status: VERIFIED end-to-end** (create → update → delete round-trip succeeded live, 2026-07-14).
+The two bugs that made hand-built bodies fail with `200 {"message":"Input failed to validate."}`:
+(1) the trigger `payload` must be a **JSON string** (double-encoded), not an object; (2) the node
+`operationPayload` must be the **validate-normalized** object, not a hand-made one.
+
+Working recipe:
+```
+// A) normalize the action payload
+POST /api/behaviors/operation/validate
+  { "type":"Alexa.TextCommand",
+    "operationPayload":"{\"deviceType\":\"…\",\"deviceSerialNumber\":\"…\",\"locale\":\"de-DE\",\"customerId\":\"…\",\"text\":\"…\"}" }
+  → 200 { "result":"VALID", "operationPayload": <NORMALIZED OBJECT> }
+
+// B) create (behaviorId omitted; include it + PUT for update)
+POST /api/behaviors/automations
+  { "name":"…", "status":"ENABLED",
+    "triggerJson":     <stringify of {"@type":"…Trigger","id":null,"skillId":null,"type":"CustomUtterance","payload": <stringify of the CustomUtteranceTriggerPayload>}>,
+    "triggerJsonList": [ <same string> ],
+    "sequenceJson":    <stringify of {"@type":"…Sequence","startNode":{"@type":"…OpaquePayloadOperationNode","type":"Alexa.TextCommand","skillId":"amzn1.ask.1p.tellalexa","operationPayload": <NORMALIZED OBJECT>,"context":null}}> }
+  → 200, returns the created Automation with a server-assigned automationId.
+```
+Header `Routines-Version` is sent but is not the blocker. The GraphQL/nexus path
+(`/nexus/v1/graphql`, `batchUpdateAutomations`) is used only for read + bulk enable/disable + run;
+create/update/delete are REST as above.
 
 ### The `applianceId` URL-encoding requirement (important)
 

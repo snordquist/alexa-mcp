@@ -449,11 +449,10 @@ if (ALLOW_WRITE) {
   server.registerTool(
     "alexa_delete_routine",
     {
-      title: "Delete a routine (UNVERIFIED endpoint)",
+      title: "Delete a routine",
       description:
-        "WARNING: the DELETE endpoint is undocumented by Amazon and unconfirmed in any library. " +
-        "This tool ATTEMPTS DELETE /api/behaviors/v2/automations/{id}. Verify the real request " +
-        "via browser DevTools before relying on it. Requires confirm:true.",
+        "Deletes a routine via DELETE /api/behaviors/automations/{id} (the non-v2 path; verified " +
+        "end-to-end). Requires confirm:true.",
       inputSchema: {
         automationId: z.string(),
         confirm: z.literal(true),
@@ -462,8 +461,9 @@ if (ALLOW_WRITE) {
     async ({ automationId }) => {
       try {
         const alexa = await getAlexa();
-        const path = `/api/behaviors/v2/automations/${encodeURIComponent(automationId)}`;
-        const result = await new Promise<any>((resolve, reject) => {
+        // NOTE: the non-v2 path. `/api/behaviors/v2/automations/{id}` is GET-only (404 on DELETE).
+        const path = `/api/behaviors/automations/${encodeURIComponent(automationId)}`;
+        await new Promise<any>((resolve, reject) => {
           (alexa as any).httpsGet(
             true,
             path,
@@ -471,11 +471,14 @@ if (ALLOW_WRITE) {
             { method: "DELETE" },
           );
         });
-        return ok({ deleted: automationId, endpoint: path, note: "endpoint unverified", result });
-      } catch (e: any) {
-        return fail(
-          `DELETE failed (endpoint may be wrong — verify via DevTools): ${hint(e)}`,
+        // Verify it's gone.
+        const routines: any = await call((cb) => alexa.getAutomationRoutines(2000, cb));
+        const stillThere = (Array.isArray(routines) ? routines : []).some(
+          (r: any) => r.automationId === automationId,
         );
+        return ok({ deleted: automationId, verifiedGone: !stillThere });
+      } catch (e: any) {
+        return fail(hint(e));
       }
     },
   );
