@@ -98,6 +98,7 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_audit_broken_references` | Find routines whose action targets a device/scene/group that no longer exists | no |
 | `alexa_create_routine` | Create a routine (voice- or time-triggered) with one or more actions | **yes** |
 | `alexa_update_routine` | Update a routine in place (full re-spec) | **yes** |
+| `alexa_set_routine_enabled` | Enable/disable a routine by id (rebuilds + PUTs with flipped status) | **yes** |
 | `alexa_trigger_routine` | Execute a routine now | **yes** |
 | `alexa_delete_routine` | Delete a routine + verify | **yes** |
 | `alexa_delete_smarthome_device` | Delete a smart-home device (orphan cleanup) — refuses if referenced by a routine/group unless `force`, and verifies removal | **yes** |

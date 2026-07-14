@@ -137,9 +137,18 @@ POST /api/behaviors/automations
     "sequenceJson":    <stringify of {"@type":"…Sequence","startNode":{"@type":"…OpaquePayloadOperationNode","type":"Alexa.TextCommand","skillId":"amzn1.ask.1p.tellalexa","operationPayload": <NORMALIZED OBJECT>,"context":null}}> }
   → 200, returns the created Automation with a server-assigned automationId.
 ```
-Header `Routines-Version` is sent but is not the blocker. The GraphQL/nexus path
-(`/nexus/v1/graphql`, `batchUpdateAutomations`) is used only for read + bulk enable/disable + run;
-create/update/delete are REST as above.
+Header `Routines-Version` is sent but is not the blocker. create/update/delete are REST as above.
+
+### Enable / disable a routine
+
+There is no status-only endpoint. The GraphQL/nexus path (`/nexus/v1/graphql` — introspection is
+**enabled**, so the full schema is queryable) has `enableAutomation`/`disableAutomation`/
+`batchUpdateAutomations` mutations, but they **reject `automationType: ROUTINE`**
+("not supported for automation type: ROUTINE") — those are for scenes/adaptive-lighting, and
+routines aren't `ScriptedAutomation` objects there. So enable/disable a routine = **REST PUT the
+full routine body with `status` flipped** (`ENABLED`/`DISABLED`), exactly like an update. Verified
+live. `alexa_set_routine_enabled` rebuilds the body from the routine's current state
+(re-encoding triggers, re-validating each action) and PUTs it.
 
 ### The `applianceId` URL-encoding requirement (important)
 

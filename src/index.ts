@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
-import { writeRoutine, type TriggerSpec } from "./routines.js";
+import { writeRoutine, setRoutineEnabled, type TriggerSpec } from "./routines.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
 
@@ -558,6 +558,32 @@ if (ALLOW_WRITE) {
           behaviorId: a.automationId,
         });
         return ok({ updated: a.automationId, name: a.name, response: res });
+      } catch (e: any) {
+        return fail(hint(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "alexa_set_routine_enabled",
+    {
+      title: "Enable or disable a routine",
+      description:
+        "Enables or disables an existing routine (by automationId). Alexa has no status-only " +
+        "endpoint, so this rebuilds the routine's write body from its current state and PUTs it " +
+        "with the status flipped; verifies the new status. Works for voice/time-triggered " +
+        "routines; exotic trigger/action types may not round-trip. Requires confirm:true.",
+      inputSchema: {
+        automationId: z.string(),
+        enabled: z.boolean(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ automationId, enabled }) => {
+      try {
+        const alexa = await getAlexa();
+        const { status } = await setRoutineEnabled(alexa, automationId, enabled);
+        return ok({ automationId, requested: enabled ? "ENABLED" : "DISABLED", status });
       } catch (e: any) {
         return fail(hint(e));
       }

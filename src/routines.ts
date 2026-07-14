@@ -211,3 +211,61 @@ export async function writeRoutine(
   const method = opts.behaviorId ? "PUT" : "POST";
   return raw(alexa, method, path, JSON.stringify(body));
 }
+
+/**
+ * Enable/disable an existing routine. Alexa has no status-only endpoint and the
+ * GraphQL enable/disable mutations reject ROUTINE-type automations, so we
+ * rebuild the routine's full write body from its current state (re-encode the
+ * triggers, re-validate each action's operationPayload) and PUT it with the
+ * status flipped — the mechanism the app itself uses. Verified live.
+ */
+export async function setRoutineEnabled(
+  alexa: AlexaRemote,
+  automationId: string,
+  enabled: boolean,
+): Promise<{ status: string }> {
+  const routines: any = await call((cb) => alexa.getAutomationRoutines(2000, cb));
+  const r = (Array.isArray(routines) ? routines : []).find((x: any) => x.automationId === automationId);
+  if (!r) throw new Error(`No routine with automationId=${automationId}`);
+
+  // Re-encode triggers (write form: double-encoded payload).
+  const triggers = (r.triggers ?? []).map((t: any) => ({
+    "@type": T_JAVA,
+    id: null,
+    skillId: t.skillId ?? null,
+    type: t.type,
+    payload: JSON.stringify(t.payload),
+  }));
+  if (!triggers.length) throw new Error("Routine has no triggers to re-encode.");
+
+  // Rebuild the sequence node tree, re-validating each action's operationPayload.
+  const rebuildNode = async (n: any): Promise<any> => {
+    if (!n || typeof n !== "object") return n;
+    if (String(n["@type"] || "").endsWith("OpaquePayloadOperationNode")) {
+      const op = await validateOperation(alexa, n.type, n.operationPayload ?? {});
+      return actionNode(n.type, op, n.skillId);
+    }
+    if (Array.isArray(n.nodesToExecute)) {
+      return { "@type": n["@type"], nodesToExecute: await Promise.all(n.nodesToExecute.map(rebuildNode)) };
+    }
+    return n;
+  };
+  const startNode = await rebuildNode(r.sequence?.startNode);
+  const sequence = { "@type": SEQUENCE, startNode };
+
+  const triggerJsons = triggers.map((t: any) => JSON.stringify(t));
+  const body: Record<string, unknown> = {
+    behaviorId: automationId,
+    name: r.name,
+    status: enabled ? "ENABLED" : "DISABLED",
+    triggerJson: triggerJsons[0],
+    triggerJsonList: triggerJsons,
+    sequenceJson: JSON.stringify(sequence),
+  };
+  await raw(alexa, "PUT", `/api/behaviors/automations/${encodeURIComponent(automationId)}`, JSON.stringify(body));
+
+  // Verify.
+  const after: any = await call((cb) => alexa.getAutomationRoutines(2000, cb));
+  const status = (Array.isArray(after) ? after : []).find((x: any) => x.automationId === automationId)?.status;
+  return { status };
+}
