@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
+import { writeRoutine, type TriggerSpec } from "./routines.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
 
@@ -477,6 +478,86 @@ if (ALLOW_WRITE) {
           (r: any) => r.automationId === automationId,
         );
         return ok({ deleted: automationId, verifiedGone: !stillThere });
+      } catch (e: any) {
+        return fail(hint(e));
+      }
+    },
+  );
+
+  const routineWriteShape = {
+    name: z.string(),
+    triggerUtterance: z.string().optional(),
+    triggerTime: z.string().optional(),
+    triggerDays: z.array(z.string()).optional(),
+    triggerTimeZone: z.string().optional(),
+    actions: z
+      .array(z.object({ type: z.string(), operationPayload: z.record(z.any()) }))
+      .min(1),
+    status: z.enum(["ENABLED", "DISABLED"]).optional(),
+    confirm: z.literal(true),
+  } as const;
+
+  const buildTriggerSpec = (a: any): TriggerSpec | null => {
+    if (a.triggerUtterance) return { kind: "utterance", utterance: a.triggerUtterance };
+    if (a.triggerTime)
+      return { kind: "schedule", time: a.triggerTime, days: a.triggerDays, timeZoneId: a.triggerTimeZone };
+    return null;
+  };
+
+  server.registerTool(
+    "alexa_create_routine",
+    {
+      title: "Create a routine",
+      description:
+        "Creates a routine (POST /api/behaviors/automations, verified). Give a trigger — either " +
+        "triggerUtterance (voice phrase) or triggerTime 'HH:MM' (+ optional triggerDays like " +
+        "['MO','TU'] and triggerTimeZone) — and one or more actions {type, operationPayload}. " +
+        "Each action's operationPayload is server-normalized via /operation/validate. For " +
+        "Alexa.TextCommand pass operationPayload {text} (deviceType/deviceSerialNumber/locale/" +
+        "customerId are auto-filled). Requires confirm:true.",
+      inputSchema: routineWriteShape,
+    },
+    async (a) => {
+      try {
+        const alexa = await getAlexa();
+        const trigger = buildTriggerSpec(a);
+        if (!trigger) return fail("Provide triggerUtterance or triggerTime.");
+        const res: any = await writeRoutine(alexa, {
+          name: a.name,
+          trigger,
+          actions: a.actions as any,
+          status: a.status,
+        });
+        return ok({ created: res?.automationId, name: a.name, response: res });
+      } catch (e: any) {
+        return fail(hint(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "alexa_update_routine",
+    {
+      title: "Update a routine",
+      description:
+        "Updates a routine (PUT /api/behaviors/automations/{id}, verified). Send the full desired " +
+        "state: automationId + name + trigger (triggerUtterance or triggerTime) + actions. Same " +
+        "action shape as alexa_create_routine. Requires confirm:true.",
+      inputSchema: { automationId: z.string(), ...routineWriteShape },
+    },
+    async (a) => {
+      try {
+        const alexa = await getAlexa();
+        const trigger = buildTriggerSpec(a);
+        if (!trigger) return fail("Provide triggerUtterance or triggerTime.");
+        const res: any = await writeRoutine(alexa, {
+          name: a.name,
+          trigger,
+          actions: a.actions as any,
+          status: a.status,
+          behaviorId: a.automationId,
+        });
+        return ok({ updated: a.automationId, name: a.name, response: res });
       } catch (e: any) {
         return fail(hint(e));
       }

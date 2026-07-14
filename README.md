@@ -96,9 +96,22 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_get_activity` | Activity history (customer-history-records) | no |
 | `alexa_list_smarthome_devices` | Smart-home devices with source (skill/Matter) + entity id — find orphans | no |
 | `alexa_audit_broken_references` | Find routines whose action targets a device/scene/group that no longer exists | no |
-| `alexa_trigger_routine` | Execute a routine | **yes** |
-| `alexa_delete_routine` | Delete a routine (endpoint unverified — see limitations) | **yes** |
+| `alexa_create_routine` | Create a routine (voice- or time-triggered) with one or more actions | **yes** |
+| `alexa_update_routine` | Update a routine in place (full re-spec) | **yes** |
+| `alexa_trigger_routine` | Execute a routine now | **yes** |
+| `alexa_delete_routine` | Delete a routine + verify | **yes** |
 | `alexa_delete_smarthome_device` | Delete a smart-home device (orphan cleanup) — refuses if referenced by a routine/group unless `force`, and verifies removal | **yes** |
+
+Routine **create/update** were reverse-engineered from the Alexa app and verified end-to-end; see
+[ARCHITECTURE.md](./ARCHITECTURE.md) for the exact write-API (the trigger `payload` is
+double-encoded and the action `operationPayload` must be `/operation/validate`-normalized — the
+tools handle both). Example create:
+
+```json
+{ "name": "Gute Nacht Ansage", "triggerUtterance": "gute nacht",
+  "actions": [ { "type": "Alexa.TextCommand", "operationPayload": { "text": "schlaf gut" } } ],
+  "confirm": true }
+```
 
 Write tools are only registered when `ALEXA_MCP_ALLOW_WRITE=1`, and each destructive call also
 requires an explicit `confirm: true` argument.
