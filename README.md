@@ -104,6 +104,7 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_list_lists` | Shopping / to-do / custom lists | no |
 | `alexa_get_list_items` | Items of a list by id | no |
 | `alexa_get_player_info` | Now-playing / media player state of a device | no |
+| `alexa_list_notifications` | Reminders / alarms / timers (id, time, label, status) | no |
 | `alexa_create_routine` | Create a routine (voice- or time-triggered) with one or more actions | **yes** |
 | `alexa_update_routine` | Update a routine in place (full re-spec) | **yes** |
 | `alexa_set_routine_enabled` | Enable/disable a routine by id (rebuilds + PUTs with flipped status) | **yes** |
@@ -116,8 +117,15 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_set_do_not_disturb` | Enable/disable Do-Not-Disturb on a device | **yes** |
 | `alexa_media_control` | Media transport: play/pause/next/previous/forward/rewind/shuffle/repeat | **yes** |
 | `alexa_add_list_item` | Add an item to a list | **yes** |
+| `alexa_update_list_item` | Edit a list item's text / mark complete | **yes** |
+| `alexa_delete_list_item` | Remove a list item | **yes** |
 | `alexa_create_group` | Create a smart-home group (room/space) | **yes** |
+| `alexa_update_group` | Rename a group / set members (read-modify-write) | **yes** |
 | `alexa_delete_group` | Delete a smart-home group (members untouched) | **yes** |
+| `alexa_set_smarthome_enablement` | Enable/disable a smart-home device | **yes** |
+| `alexa_create_reminder` | Create a reminder on a device | **yes** |
+| `alexa_create_alarm` | Create an alarm (< 1 year out; it rings) | **yes** |
+| `alexa_delete_notification` | Delete a reminder / alarm / timer by id | **yes** |
 
 Most write tools also accept `dryRun: true` to preview the request/plan without executing.
 

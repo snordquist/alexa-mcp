@@ -1,6 +1,6 @@
 {
   "name": "alexa-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "MCP server to audit and clean up Amazon Alexa: list/inspect/delete routines, list and delete smart-home devices (orphan cleanup), scenes and activity history. Built on alexa-remote2.",
   "type": "module",
   "license": "MIT",

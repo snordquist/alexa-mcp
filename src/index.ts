@@ -37,6 +37,18 @@ function call<T>(fn: (cb: (err: any, body: T) => void) => void): Promise<T> {
   );
 }
 
+// Some read endpoints (lists, notifications) intermittently return an empty
+// body -> alexa-remote2 surfaces "no JSON"/"no body". Retry those transients.
+async function callRetry<T>(fn: (cb: (err: any, body: T) => void) => void, tries = 4): Promise<T> {
+  for (let i = 0; ; i++) {
+    try { return await call(fn); }
+    catch (e: any) {
+      if (i >= tries - 1 || !/no json|no body/i.test(e?.message ?? "")) throw e;
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+  }
+}
+
 function ok(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
@@ -352,8 +364,18 @@ server.registerTool(
   "alexa_list_lists",
   { title: "List shopping/to-do lists", description: "Alexa lists (shopping list, to-do, custom).", inputSchema: {} },
   async () => {
-    try { const alexa = await getAlexa(); return ok(await call((cb) => (alexa as any).getListsV2(cb))); }
-    catch (e: any) { return fail(hint(e)); }
+    try {
+      const alexa = await getAlexa();
+      const res: any = await callRetry((cb) => (alexa as any).getListsV2(cb));
+      const arr = res?.lists ?? (Array.isArray(res) ? res : Object.values(res ?? {}));
+      // getListsV2 returns `id` as a single-element array — normalize to a string listId.
+      const lists = (arr as any[]).filter((l) => l && typeof l === "object").map((l: any) => ({
+        listId: Array.isArray(l.id) ? l.id[0] : (l.id ?? l.listId),
+        name: l.name,
+        type: l.type,
+      }));
+      return ok(lists);
+    } catch (e: any) { return fail(hint(e)); }
   },
 );
 
@@ -365,8 +387,15 @@ server.registerTool(
     inputSchema: { listId: z.string() },
   },
   async ({ listId }) => {
-    try { const alexa = await getAlexa(); return ok(await call((cb) => (alexa as any).getListItemsV2(listId, {}, cb))); }
-    catch (e: any) { return fail(hint(e)); }
+    try {
+      const alexa = await getAlexa();
+      // v1 returns PLAINTEXT item names (`value`); v2's `encryptedItemName` is ciphertext.
+      const res: any = await callRetry((cb) => (alexa as any).getListItems(listId, {}, cb));
+      const items = (Array.isArray(res) ? res : Object.values(res ?? {})).filter(
+        (v: any) => v && typeof v === "object" && v.id,
+      );
+      return ok(items.map((i: any) => ({ itemId: i.id, value: i.value, completed: i.completed, version: i.version })));
+    } catch (e: any) { return fail(hint(e)); }
   },
 );
 
@@ -382,6 +411,31 @@ server.registerTool(
       const alexa = await getAlexa();
       const res: any = await call((cb) => (alexa as any).getPlayerInfo(device, cb));
       return ok(res?.playerInfo ?? res);
+    } catch (e: any) { return fail(hint(e)); }
+  },
+);
+
+server.registerTool(
+  "alexa_list_notifications",
+  {
+    title: "List reminders / alarms / timers",
+    description: "All notifications (reminders, alarms, timers) with id, type, time, label, status.",
+    inputSchema: { type: z.enum(["Reminder", "Alarm", "Timer"]).optional() },
+  },
+  async ({ type }) => {
+    try {
+      const alexa = await getAlexa();
+      // uncached read; retry the transient empty-body ("no JSON") error.
+      const res: any = await callRetry((cb) => (alexa as any).getNotifications(false, cb));
+      let list = res?.notifications ?? [];
+      if (type) list = list.filter((n: any) => n.type === type);
+      const mapped = list.map((n: any) => ({
+        id: n.id, type: n.type, status: n.status,
+        label: n.reminderLabel ?? n.timerLabel ?? n.alarmLabel,
+        date: n.originalDate, time: n.originalTime,
+        device: n.deviceSerialNumber, recurrence: n.recurringPattern,
+      }));
+      return ok({ count: mapped.length, notifications: mapped });
     } catch (e: any) { return fail(hint(e)); }
   },
 );
@@ -808,6 +862,191 @@ if (ALLOW_WRITE) {
         const alexa = await getAlexa();
         await call((cb) => (alexa as any).deleteSmarthomeGroup(groupId, cb));
         return ok({ deletedGroup: groupId });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  // -- List item update/delete (read-before-write for version + text) -------
+  // v1 getListItems returns plaintext {id, value, completed, version}; match by id.
+  const findListItem = async (alexa: AlexaRemote, listId: string, itemId: string) => {
+    const res: any = await callRetry((cb) => (alexa as any).getListItems(listId, {}, cb));
+    const arr = (Array.isArray(res) ? res : Object.values(res ?? {})).filter((v: any) => v && typeof v === "object" && v.id);
+    return arr.find((x: any) => x.id === itemId);
+  };
+
+  server.registerTool(
+    "alexa_update_list_item",
+    {
+      title: "Update a list item",
+      description:
+        "Edits a list item's text and/or marks it complete. Reads the item first for its required " +
+        "version (optimistic concurrency). Pass value (new text) and/or completed (true/false).",
+      inputSchema: {
+        listId: z.string(), itemId: z.string(),
+        value: z.string().optional(), completed: z.boolean().optional(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ listId, itemId, value, completed }) => {
+      try {
+        const alexa = await getAlexa();
+        const item = await findListItem(alexa, listId, itemId);
+        if (!item) return fail(`No item ${itemId} in list ${listId}`);
+        const opts: any = { version: item.version, value: value ?? item.value };
+        if (completed !== undefined) opts.completed = completed;
+        await call((cb) => (alexa as any).updateListItem(listId, itemId, opts, cb));
+        return ok({ updated: itemId, value: opts.value, completed });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_delete_list_item",
+    {
+      title: "Delete a list item",
+      description: "Removes an item from a list (reads its version first). Requires confirm:true.",
+      inputSchema: { listId: z.string(), itemId: z.string(), confirm: z.literal(true) },
+    },
+    async ({ listId, itemId }) => {
+      try {
+        const alexa = await getAlexa();
+        const item = await findListItem(alexa, listId, itemId);
+        if (!item) return fail(`No item ${itemId} in list ${listId}`);
+        await call((cb) => (alexa as any).deleteListItem(listId, itemId, { version: item.version }, cb));
+        return ok({ deleted: itemId });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  // -- Smart-home device enable/disable ------------------------------------
+  server.registerTool(
+    "alexa_set_smarthome_enablement",
+    {
+      title: "Enable/disable a smart-home device",
+      description:
+        "Enables or disables a smart-home device by applianceId (from alexa_list_smarthome_devices). " +
+        "Disabled devices stay in Alexa but are inactive. Requires confirm:true.",
+      inputSchema: { applianceId: z.string(), enabled: z.boolean(), confirm: z.literal(true) },
+    },
+    async ({ applianceId, enabled }) => {
+      try {
+        const alexa = await getAlexa();
+        // The lib interpolates the applianceId raw; SKILL ids contain #/= and
+        // break the URL (empty non-2xx -> "no body"). Encode it (like delete).
+        const path = `/api/phoenix/v2/appliance/${encodeURIComponent(applianceId)}/enablement`;
+        const res: any = await new Promise((resolve, reject) => {
+          (alexa as any).httpsGet(
+            true, path,
+            (err: any, b: any) => (err ? reject(err) : resolve(b ?? { success: true })),
+            { method: "PUT", data: JSON.stringify({ applianceId, enabled }), headers: { "Content-Type": "application/json" } },
+          );
+        });
+        return ok({ applianceId, enabled, success: res?.success !== false });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  // -- Group update (read-modify-write; PUT is full-replace) ----------------
+  server.registerTool(
+    "alexa_update_group",
+    {
+      title: "Update a smart-home group",
+      description:
+        "Renames a group and/or sets its members. NOTE: applianceIds is a full REPLACE list — " +
+        "the tool reads the current group and preserves fields you don't pass (so a rename keeps " +
+        "members). Requires confirm:true.",
+      inputSchema: {
+        groupId: z.string(),
+        name: z.string().optional(),
+        applianceIds: z.array(z.string()).optional(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ groupId, name, applianceIds }) => {
+      try {
+        const alexa = await getAlexa();
+        const g: any = await call((cb) => alexa.getSmarthomeGroups(cb));
+        const cur = (g?.applianceGroups ?? []).find((x: any) => (x.groupId ?? x.entityId) === groupId);
+        if (!cur) return fail(`No group ${groupId}`);
+        const body = {
+          name: name ?? cur.name,
+          applianceIds: applianceIds ?? cur.applianceIds ?? [],
+          type: cur.type ?? "SPACE",
+        };
+        const result = await new Promise<any>((resolve, reject) => {
+          (alexa as any).httpsGet(
+            true,
+            `/api/phoenix/group/${encodeURIComponent(groupId)}`,
+            (err: any, b: any) => (err ? reject(err) : resolve(b ?? { success: true })),
+            { method: "PUT", data: JSON.stringify(body), headers: { "Content-Type": "application/json" } },
+          );
+        });
+        if (result?.success !== true) return fail(`Update returned: ${JSON.stringify(result)}`);
+        return ok({ updated: groupId, name: body.name, memberCount: body.applianceIds.length });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  // -- Reminders / alarms (notifications) ----------------------------------
+  const parseWhen = (s: string) => { const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+
+  server.registerTool(
+    "alexa_create_reminder",
+    {
+      title: "Create a reminder",
+      description:
+        "Creates a reminder on a device. when = ISO datetime (e.g. 2026-07-20T07:30:00), local " +
+        "time. device = Echo name or serial. Requires confirm:true.",
+      inputSchema: { device: z.string(), label: z.string(), when: z.string(), confirm: z.literal(true) },
+    },
+    async ({ device, label, when }) => {
+      try {
+        const alexa = await getAlexa();
+        const d = parseWhen(when);
+        if (!d) return fail("Invalid 'when' — use an ISO datetime like 2026-07-20T07:30:00");
+        const obj = (alexa as any).createNotificationObject(device, "Reminder", label, d, "ON");
+        const created: any = await call((cb) => (alexa as any).createNotification(obj, cb));
+        return ok({ createdReminder: created?.id, label, when });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_create_alarm",
+    {
+      title: "Create an alarm",
+      description:
+        "Creates an alarm on a device (it WILL ring). when = ISO datetime, must be < 1 year out " +
+        "(Amazon rejects beyond that). device = Echo name or serial. Requires confirm:true.",
+      inputSchema: { device: z.string(), when: z.string(), label: z.string().optional(), confirm: z.literal(true) },
+    },
+    async ({ device, when, label }) => {
+      try {
+        const alexa = await getAlexa();
+        const d = parseWhen(when);
+        if (!d) return fail("Invalid 'when' — use an ISO datetime like 2026-07-20T07:30:00");
+        const obj = (alexa as any).createNotificationObject(device, "Alarm", label ?? "Alarm", d, "ON");
+        const created: any = await call((cb) => (alexa as any).createNotification(obj, cb));
+        return ok({ createdAlarm: created?.alarmToken ?? created?.id, when });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_delete_notification",
+    {
+      title: "Delete a reminder / alarm / timer",
+      description: "Deletes a notification by id (from alexa_list_notifications). Requires confirm:true.",
+      inputSchema: { id: z.string(), confirm: z.literal(true) },
+    },
+    async ({ id }) => {
+      try {
+        const alexa = await getAlexa();
+        const res: any = await callRetry((cb) => (alexa as any).getNotifications(false, cb));
+        const notif = (res?.notifications ?? []).find((n: any) => n.id === id);
+        if (!notif) return fail(`No notification ${id}`);
+        await call((cb) => (alexa as any).deleteNotification(notif, cb));
+        return ok({ deleted: id });
       } catch (e: any) { return fail(hint(e)); }
     },
   );
