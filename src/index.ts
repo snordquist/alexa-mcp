@@ -12,6 +12,7 @@ import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
 import { writeRoutine, setRoutineEnabled, type TriggerSpec } from "./routines.js";
+import { flattenAppliances, collectRoutineTargets } from "./util.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
 
@@ -41,43 +42,6 @@ function ok(data: unknown) {
 }
 function fail(msg: string) {
   return { isError: true, content: [{ type: "text" as const, text: msg }] };
-}
-
-/** Flattens the nested phoenix structure (getSmarthomeDevices) into an
- * appliance list and dedupes by applianceId. */
-function flattenAppliances(root: unknown): any[] {
-  const acc: any[] = [];
-  const walk = (o: any) => {
-    if (!o || typeof o !== "object") return;
-    if (o.applianceId && o.friendlyName !== undefined) {
-      acc.push(o);
-      return;
-    }
-    for (const k of Object.keys(o)) walk(o[k]);
-  };
-  walk(root);
-  const m = new Map<string, any>();
-  for (const a of acc) if (!m.has(a.applianceId)) m.set(a.applianceId, a);
-  return [...m.values()];
-}
-
-/** Collects all device-target ids referenced by a routine's action sequence. */
-function collectRoutineTargets(routine: any): { target: string; op: string }[] {
-  const out: { target: string; op: string }[] = [];
-  const walk = (n: any) => {
-    if (!n || typeof n !== "object") return;
-    if (String(n["@type"] || "").endsWith("OpaquePayloadOperationNode")) {
-      const p = n.operationPayload || {};
-      if (p.target) out.push({ target: p.target, op: (p.operations || []).map((o: any) => o.type).join(",") || n.type });
-    }
-    for (const k of ["startNode", "nodesToExecute", "nodes"]) {
-      const v = n[k];
-      if (Array.isArray(v)) v.forEach(walk);
-      else if (v) walk(v);
-    }
-  };
-  walk(routine?.sequence?.startNode);
-  return out;
 }
 
 const server = new McpServer({ name: "alexa-mcp", version: "0.1.0" });
@@ -494,6 +458,7 @@ if (ALLOW_WRITE) {
       .array(z.object({ type: z.string(), operationPayload: z.record(z.any()) }))
       .min(1),
     status: z.enum(["ENABLED", "DISABLED"]).optional(),
+    dryRun: z.boolean().optional(),
     confirm: z.literal(true),
   } as const;
 
@@ -527,8 +492,9 @@ if (ALLOW_WRITE) {
           trigger,
           actions: a.actions as any,
           status: a.status,
+          dryRun: a.dryRun,
         });
-        return ok({ created: res?.automationId, name: a.name, response: res });
+        return ok(a.dryRun ? res : { created: res?.automationId, name: a.name, response: res });
       } catch (e: any) {
         return fail(hint(e));
       }
@@ -556,8 +522,9 @@ if (ALLOW_WRITE) {
           actions: a.actions as any,
           status: a.status,
           behaviorId: a.automationId,
+          dryRun: a.dryRun,
         });
-        return ok({ updated: a.automationId, name: a.name, response: res });
+        return ok(a.dryRun ? res : { updated: a.automationId, name: a.name, response: res });
       } catch (e: any) {
         return fail(hint(e));
       }
@@ -576,14 +543,15 @@ if (ALLOW_WRITE) {
       inputSchema: {
         automationId: z.string(),
         enabled: z.boolean(),
+        dryRun: z.boolean().optional(),
         confirm: z.literal(true),
       },
     },
-    async ({ automationId, enabled }) => {
+    async ({ automationId, enabled, dryRun }) => {
       try {
         const alexa = await getAlexa();
-        const { status } = await setRoutineEnabled(alexa, automationId, enabled);
-        return ok({ automationId, requested: enabled ? "ENABLED" : "DISABLED", status });
+        const res = await setRoutineEnabled(alexa, automationId, enabled, dryRun);
+        return ok(dryRun ? res : { automationId, requested: enabled ? "ENABLED" : "DISABLED", status: (res as any).status });
       } catch (e: any) {
         return fail(hint(e));
       }

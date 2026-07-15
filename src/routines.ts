@@ -61,6 +61,33 @@ function call<T = any>(fn: (cb: (e: any, b: T) => void) => void): Promise<T> {
   return new Promise((resolve, reject) => fn((e, b) => (e ? reject(e) : resolve(b))));
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** True for clearly-transient network/throttle errors (safe to retry). */
+function isTransient(err: any): boolean {
+  const m = String(err?.message ?? err ?? "");
+  return /ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|timeout|ENOTFOUND|EAI_AGAIN|throttl|rate.?limit|too many requests|\b429\b|\b503\b/i.test(m);
+}
+
+/**
+ * Retry with exponential backoff — ONLY for idempotent operations (GET, PUT,
+ * DELETE, validate). Never wrap a create POST: a lost response after a
+ * successful write would duplicate the routine.
+ */
+async function withBackoff<T>(fn: () => Promise<T>, retries = 3, baseMs = 500): Promise<T> {
+  let last: any;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      if (i === retries || !isTransient(e)) throw e;
+      await sleep(baseMs * 2 ** i);
+    }
+  }
+  throw last;
+}
+
 /** Resolves customerId / marketplace / a usable Echo from the account. */
 export async function accountContext(
   alexa: AlexaRemote,
@@ -85,8 +112,8 @@ export async function validateOperation(
   type: string,
   operationPayload: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const body: any = await raw(alexa, "POST", "/api/behaviors/operation/validate",
-    JSON.stringify({ type, operationPayload: JSON.stringify(operationPayload) }));
+  const body: any = await withBackoff(() => raw(alexa, "POST", "/api/behaviors/operation/validate",
+    JSON.stringify({ type, operationPayload: JSON.stringify(operationPayload) })));
   if (body?.result && body.result !== "VALID") {
     throw new Error(`validate ${type}: ${body.result} ${body.message ?? ""}`.trim());
   }
@@ -182,6 +209,7 @@ export async function writeRoutine(
     status?: "ENABLED" | "DISABLED";
     behaviorId?: string; // present => update (PUT), absent => create (POST)
     ctx?: AccountContext;
+    dryRun?: boolean;
   },
 ): Promise<any> {
   const ctx = opts.ctx ?? (await accountContext(alexa));
@@ -209,7 +237,14 @@ export async function writeRoutine(
     ? `/api/behaviors/automations/${encodeURIComponent(opts.behaviorId)}`
     : "/api/behaviors/automations";
   const method = opts.behaviorId ? "PUT" : "POST";
-  return raw(alexa, method, path, JSON.stringify(body));
+
+  if (opts.dryRun) return { dryRun: true, method, path, body };
+
+  // PUT (update) is idempotent → safe to retry; POST (create) is NOT (a lost
+  // response after a successful write would duplicate the routine).
+  return method === "PUT"
+    ? withBackoff(() => raw(alexa, method, path, JSON.stringify(body)))
+    : raw(alexa, method, path, JSON.stringify(body));
 }
 
 /**
@@ -223,10 +258,12 @@ export async function setRoutineEnabled(
   alexa: AlexaRemote,
   automationId: string,
   enabled: boolean,
-): Promise<{ status: string }> {
+  dryRun = false,
+): Promise<{ status?: string; dryRun?: boolean; current?: string; wouldSet?: string }> {
   const routines: any = await call((cb) => alexa.getAutomationRoutines(2000, cb));
   const r = (Array.isArray(routines) ? routines : []).find((x: any) => x.automationId === automationId);
   if (!r) throw new Error(`No routine with automationId=${automationId}`);
+  if (dryRun) return { dryRun: true, current: r.status, wouldSet: enabled ? "ENABLED" : "DISABLED" };
 
   // Re-encode triggers (write form: double-encoded payload).
   const triggers = (r.triggers ?? []).map((t: any) => ({
@@ -262,7 +299,8 @@ export async function setRoutineEnabled(
     triggerJsonList: triggerJsons,
     sequenceJson: JSON.stringify(sequence),
   };
-  await raw(alexa, "PUT", `/api/behaviors/automations/${encodeURIComponent(automationId)}`, JSON.stringify(body));
+  await withBackoff(() =>
+    raw(alexa, "PUT", `/api/behaviors/automations/${encodeURIComponent(automationId)}`, JSON.stringify(body)));
 
   // Verify.
   const after: any = await call((cb) => alexa.getAutomationRoutines(2000, cb));
