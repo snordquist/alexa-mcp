@@ -19,21 +19,22 @@ It talks to Amazon's internal Alexa cloud API via
 
 ## Why this exists (vs. other Alexa MCP servers)
 
-Most Alexa MCP servers focus on **control** (announcements/TTS, volume, running routines, lists,
-groups). This one is deliberately narrow and complementary — it focuses on the **audit &
-cleanup** gap that nothing else covers and that **Amazon's own app can no longer do**
-(bulk-deleting smart-home devices was removed from the Alexa web app):
+Other Alexa MCP servers focus on **control** (announcements/TTS, volume, lists). This one does
+that **and** the things nothing else does — full **routine CRUD** (create/update/enable-disable/
+delete) and **audit & cleanup** that **Amazon's own app can no longer do** (bulk-deleting
+smart-home devices was removed from the Alexa web app). All reverse-engineered from the Alexa app
+and verified end-to-end.
 
 | Capability | This server |
 |---|---|
-| List routines | ✅ |
-| Inspect a routine's triggers & action sequence | ✅ |
-| **Delete a routine** | ✅ (write-gated; endpoint unverified — see limitations) |
+| List / inspect routines (triggers + action sequence) | ✅ |
+| **Create / update / enable-disable / delete routines** | ✅ (write-gated; verified) |
+| Find routines with **broken references** (dangling targets) | ✅ |
 | List smart-home devices (with source + reachability) | ✅ |
-| **Delete a smart-home device** (orphan cleanup) | ✅ (write-gated) |
-| List scenes / smart-home entities | ✅ |
-| Activity history | ✅ |
-| Announcements / TTS / volume / lists | ❌ (use a control-focused server or Home Assistant) |
+| **Delete a smart-home device** (orphan cleanup, reference-safe) | ✅ (write-gated) |
+| Scenes, groups (list/create/delete), activity history | ✅ |
+| Announcements / TTS / SSML, media transport, volume, DND | ✅ (write-gated) |
+| Shopping / to-do lists (read + add) | ✅ |
 
 It is **read-only by default**. Destructive tools are only registered when you explicitly opt in.
 
@@ -96,12 +97,29 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_get_activity` | Activity history (customer-history-records) | no |
 | `alexa_list_smarthome_devices` | Smart-home devices with source (skill/Matter) + entity id — find orphans | no |
 | `alexa_audit_broken_references` | Find routines whose action targets a device/scene/group that no longer exists | no |
+| `alexa_get_volumes` | Current speaker volume of every device | no |
+| `alexa_get_do_not_disturb` | Do-Not-Disturb status per device | no |
+| `alexa_query_device` | Live state of smart-home devices/groups by applianceId | no |
+| `alexa_list_groups` | Smart-home groups (rooms/spaces) with members | no |
+| `alexa_list_lists` | Shopping / to-do / custom lists | no |
+| `alexa_get_list_items` | Items of a list by id | no |
+| `alexa_get_player_info` | Now-playing / media player state of a device | no |
 | `alexa_create_routine` | Create a routine (voice- or time-triggered) with one or more actions | **yes** |
 | `alexa_update_routine` | Update a routine in place (full re-spec) | **yes** |
 | `alexa_set_routine_enabled` | Enable/disable a routine by id (rebuilds + PUTs with flipped status) | **yes** |
 | `alexa_trigger_routine` | Execute a routine now | **yes** |
 | `alexa_delete_routine` | Delete a routine + verify | **yes** |
 | `alexa_delete_smarthome_device` | Delete a smart-home device (orphan cleanup) — refuses if referenced by a routine/group unless `force`, and verifies removal | **yes** |
+| `alexa_speak` | Make a device speak / announce (`speak` \| `announcement` \| `ssml`) | **yes** |
+| `alexa_text_command` | Run a typed command as if spoken to a device | **yes** |
+| `alexa_set_volume` | Set an Echo's speaker volume (0–100) | **yes** |
+| `alexa_set_do_not_disturb` | Enable/disable Do-Not-Disturb on a device | **yes** |
+| `alexa_media_control` | Media transport: play/pause/next/previous/forward/rewind/shuffle/repeat | **yes** |
+| `alexa_add_list_item` | Add an item to a list | **yes** |
+| `alexa_create_group` | Create a smart-home group (room/space) | **yes** |
+| `alexa_delete_group` | Delete a smart-home group (members untouched) | **yes** |
+
+Most write tools also accept `dryRun: true` to preview the request/plan without executing.
 
 Routine **create/update** were reverse-engineered from the Alexa app and verified end-to-end; see
 [ARCHITECTURE.md](./ARCHITECTURE.md) for the exact write-API (the trigger `payload` is

@@ -296,6 +296,96 @@ server.registerTool(
   },
 );
 
+// -- Control read tools (parity with control-focused servers) ---------------
+server.registerTool(
+  "alexa_get_volumes",
+  { title: "Get device volumes", description: "Current speaker volume of every device.", inputSchema: {} },
+  async () => {
+    try { const alexa = await getAlexa(); return ok(await call((cb) => (alexa as any).getAllDeviceVolumes(cb))); }
+    catch (e: any) { return fail(hint(e)); }
+  },
+);
+
+server.registerTool(
+  "alexa_get_do_not_disturb",
+  { title: "Get Do-Not-Disturb status", description: "Do-Not-Disturb state per device.", inputSchema: {} },
+  async () => {
+    try { const alexa = await getAlexa(); return ok(await call((cb) => (alexa as any).getDoNotDisturb(cb))); }
+    catch (e: any) { return fail(hint(e)); }
+  },
+);
+
+server.registerTool(
+  "alexa_query_device",
+  {
+    title: "Query smart-home device state",
+    description: "Live state of smart-home devices/groups by applianceId (or entityId).",
+    inputSchema: { applianceIds: z.array(z.string()).min(1), entityType: z.enum(["APPLIANCE", "GROUP"]).optional() },
+  },
+  async ({ applianceIds, entityType }) => {
+    try {
+      const alexa = await getAlexa();
+      const res = entityType
+        ? await call((cb) => (alexa as any).querySmarthomeDevices(applianceIds, entityType, cb))
+        : await call((cb) => (alexa as any).querySmarthomeDevices(applianceIds, cb));
+      return ok(res);
+    } catch (e: any) { return fail(hint(e)); }
+  },
+);
+
+server.registerTool(
+  "alexa_list_groups",
+  { title: "List smart-home groups", description: "Smart-home groups (rooms/spaces) with members.", inputSchema: {} },
+  async () => {
+    try {
+      const alexa = await getAlexa();
+      const res: any = await call((cb) => alexa.getSmarthomeGroups(cb));
+      const groups = (res?.applianceGroups ?? []).map((g: any) => ({
+        name: g.name, groupId: g.groupId ?? g.entityId, applianceIds: g.applianceIds, type: g.type,
+      }));
+      return ok(groups);
+    } catch (e: any) { return fail(hint(e)); }
+  },
+);
+
+server.registerTool(
+  "alexa_list_lists",
+  { title: "List shopping/to-do lists", description: "Alexa lists (shopping list, to-do, custom).", inputSchema: {} },
+  async () => {
+    try { const alexa = await getAlexa(); return ok(await call((cb) => (alexa as any).getListsV2(cb))); }
+    catch (e: any) { return fail(hint(e)); }
+  },
+);
+
+server.registerTool(
+  "alexa_get_list_items",
+  {
+    title: "Get items of a list",
+    description: "Items of a list by listId (from alexa_list_lists).",
+    inputSchema: { listId: z.string() },
+  },
+  async ({ listId }) => {
+    try { const alexa = await getAlexa(); return ok(await call((cb) => (alexa as any).getListItemsV2(listId, {}, cb))); }
+    catch (e: any) { return fail(hint(e)); }
+  },
+);
+
+server.registerTool(
+  "alexa_get_player_info",
+  {
+    title: "Now playing / player state",
+    description: "Current media player state (now playing, progress, provider) for a device.",
+    inputSchema: { device: z.string() },
+  },
+  async ({ device }) => {
+    try {
+      const alexa = await getAlexa();
+      const res: any = await call((cb) => (alexa as any).getPlayerInfo(device, cb));
+      return ok(res?.playerInfo ?? res);
+    } catch (e: any) { return fail(hint(e)); }
+  },
+);
+
 // -- Write tools (gated) ----------------------------------------------------
 if (ALLOW_WRITE) {
   server.registerTool(
@@ -555,6 +645,170 @@ if (ALLOW_WRITE) {
       } catch (e: any) {
         return fail(hint(e));
       }
+    },
+  );
+
+  // -- Control write tools (parity) ----------------------------------------
+  server.registerTool(
+    "alexa_speak",
+    {
+      title: "Make a device speak / announce",
+      description:
+        "Makes an Echo say something. mode 'speak' = plain TTS, 'announcement' = the chime + " +
+        "'announcement on all/one device', 'ssml' = SSML markup in text. device = Echo name or serial.",
+      inputSchema: {
+        device: z.string(),
+        text: z.string(),
+        mode: z.enum(["speak", "announcement", "ssml"]).optional(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ device, text, mode }) => {
+      try {
+        const alexa = await getAlexa();
+        await call((cb) => alexa.sendSequenceCommand(device, mode ?? "speak", text, cb));
+        return ok({ device, mode: mode ?? "speak", said: text });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_text_command",
+    {
+      title: "Send a text command to Alexa",
+      description: "Runs a typed command as if spoken to the device (e.g. 'wie spät ist es').",
+      inputSchema: { device: z.string(), text: z.string(), confirm: z.literal(true) },
+    },
+    async ({ device, text }) => {
+      try {
+        const alexa = await getAlexa();
+        await call((cb) => alexa.sendSequenceCommand(device, "textCommand", text, cb));
+        return ok({ device, command: text });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_set_volume",
+    {
+      title: "Set device volume",
+      description: "Sets an Echo's speaker volume (0–100). device = name or serial.",
+      inputSchema: { device: z.string(), volume: z.number().int().min(0).max(100), confirm: z.literal(true) },
+    },
+    async ({ device, volume }) => {
+      try {
+        const alexa = await getAlexa();
+        await call((cb) => alexa.sendSequenceCommand(device, "volume", volume, cb));
+        return ok({ device, volume });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_set_do_not_disturb",
+    {
+      title: "Set Do-Not-Disturb",
+      description: "Enables/disables Do-Not-Disturb on a device. device = name or serial.",
+      inputSchema: { device: z.string(), enabled: z.boolean(), confirm: z.literal(true) },
+    },
+    async ({ device, enabled }) => {
+      try {
+        const alexa = await getAlexa();
+        await call((cb) => (alexa as any).setDoNotDisturb(device, enabled, cb));
+        return ok({ device, doNotDisturb: enabled });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_add_list_item",
+    {
+      title: "Add an item to a list",
+      description: "Adds an item (text) to a list by listId (from alexa_list_lists).",
+      inputSchema: { listId: z.string(), value: z.string(), confirm: z.literal(true) },
+    },
+    async ({ listId, value }) => {
+      try {
+        const alexa = await getAlexa();
+        const res = await call((cb) => (alexa as any).addListItem(listId, value, cb));
+        return ok({ listId, added: value, result: res });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_media_control",
+    {
+      title: "Media transport control",
+      description:
+        "Controls media playback on a device: play, pause, next, previous, forward, rewind, " +
+        "shuffle, repeat. For shuffle/repeat pass value:true/false. device = name or serial. " +
+        "Verified on Echo Show.",
+      inputSchema: {
+        device: z.string(),
+        command: z.enum(["play", "pause", "next", "previous", "forward", "rewind", "shuffle", "repeat"]),
+        value: z.boolean().optional(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ device, command, value }) => {
+      try {
+        const alexa = await getAlexa();
+        await call((cb) => alexa.sendCommand(device, command as any, (value ?? null) as any, cb));
+        return ok({ device, command, value: value ?? null });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_create_group",
+    {
+      title: "Create a smart-home group",
+      description:
+        "Creates a smart-home group (room/space) via POST /api/phoenix/group and returns its " +
+        "groupId. Pass applianceIds (from alexa_list_smarthome_devices) to add members, or none " +
+        "for an empty group. Requires confirm:true.",
+      inputSchema: {
+        name: z.string(),
+        applianceIds: z.array(z.string()).optional(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ name, applianceIds }) => {
+      try {
+        const alexa = await getAlexa();
+        const body = { name, applianceIds: applianceIds ?? [], type: "SPACE", defaults: [], childIds: [] };
+        const result = await new Promise<any>((resolve, reject) => {
+          (alexa as any).httpsGet(
+            true,
+            "/api/phoenix/group",
+            (err: any, b: any) => (err ? reject(err) : resolve(b ?? { success: true })),
+            { method: "POST", data: JSON.stringify(body), headers: { "Content-Type": "application/json" } },
+          );
+        });
+        if (result?.success !== true) return fail(`Create returned: ${JSON.stringify(result)}`);
+        // Re-query to return the assigned groupId.
+        const g: any = await call((cb) => alexa.getSmarthomeGroups(cb));
+        const created = (g?.applianceGroups ?? []).find((x: any) => x.name === name);
+        return ok({ created: name, groupId: created?.groupId, members: applianceIds ?? [] });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_delete_group",
+    {
+      title: "Delete a smart-home group",
+      description: "Deletes a smart-home group by groupId (from alexa_list_groups). The member " +
+        "devices are NOT deleted — only the group. Requires confirm:true.",
+      inputSchema: { groupId: z.string(), confirm: z.literal(true) },
+    },
+    async ({ groupId }) => {
+      try {
+        const alexa = await getAlexa();
+        await call((cb) => (alexa as any).deleteSmarthomeGroup(groupId, cb));
+        return ok({ deletedGroup: groupId });
+      } catch (e: any) { return fail(hint(e)); }
     },
   );
 }
