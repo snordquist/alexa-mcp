@@ -1,5 +1,7 @@
 # alexa-mcp
 
+[![CI](https://github.com/snordquist/alexa-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/snordquist/alexa-mcp/actions/workflows/ci.yml)
+
 **The cleanup-focused Alexa MCP server.** An [MCP](https://modelcontextprotocol.io) server
 that lets an AI assistant (Claude Code, Claude Desktop, …) **audit and clean up** your Amazon
 Alexa account: list and inspect **routines**, list **smart-home devices** and **delete the
