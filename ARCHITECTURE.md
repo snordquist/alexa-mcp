@@ -88,7 +88,8 @@ to it returns 404).
 | Validate an action payload | `POST /api/behaviors/operation/validate` |
 
 `behaviorId` == `automationId`. Header `Routines-Version: <client-version>` is attached to writes
-(plus `Content-Type: application/json`).
+(plus `Content-Type: application/json; charset=utf-8` — without the charset, non-ASCII text such as
+`"que horas são"` is stored as Latin-1 mojibake, `"que horas sÃ£o"`).
 
 **The write body is NOT the read object.** It is a flat object whose sub-fields are **JSON
 strings** with different key names (from the app's `Automation.serialize()`):
@@ -120,6 +121,14 @@ strings** with different key names (from the app's `Automation.serialize()`):
 The two bugs that made hand-built bodies fail with `200 {"message":"Input failed to validate."}`:
 (1) the trigger `payload` must be a **JSON string** (double-encoded), not an object; (2) the node
 `operationPayload` must be the **validate-normalized** object, not a hand-made one.
+
+Rejections never come as an HTTP error: any refused write answers `200 {"message":"…"}`
+(`Input failed to validate.`, `Object not found.` for an unknown `behaviorId`), so
+`writeRoutine` throws whenever the response has a `message` and no `automationId`.
+
+Schedule triggers: the app stores "every day" as `RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=SU,MO,TU,WE,TH,FR,SA`;
+`RRULE:FREQ=DAILY;INTERVAL=1` is rejected with `Input failed to validate.` (verified live on
+amazon.com.br, 2026-10-09), so a schedule without days is sent as the seven-day weekly rule.
 
 Working recipe:
 ```

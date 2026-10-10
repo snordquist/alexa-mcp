@@ -29,6 +29,7 @@ console.log("----------------");
 console.log("Configuration (overridable via env):");
 console.log(`  amazonPage        = ${cfg.amazonPage}`);
 console.log(`  acceptLanguage    = ${cfg.acceptLanguage}`);
+console.log(`  proxyLanguage     = ${cfg.proxyLanguage}`);
 console.log(`  proxyOwnIp        = ${cfg.proxyOwnIp}`);
 console.log(`  proxyPort         = ${cfg.proxyPort}`);
 console.log(`  proxyListenBind   = ${cfg.proxyListenBind}`);

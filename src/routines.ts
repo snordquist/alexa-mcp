@@ -52,7 +52,7 @@ function raw<T = any>(
       true,
       path,
       (err: any, body: any) => (err ? reject(err) : resolve(body)),
-      { method, data, headers: { "Content-Type": "application/json", "Routines-Version": "3.0.264101" } },
+      { method, data, headers: { "Content-Type": "application/json; charset=utf-8", "Routines-Version": "3.0.264101" } },
     );
   });
 }
@@ -91,7 +91,7 @@ async function withBackoff<T>(fn: () => Promise<T>, retries = 3, baseMs = 500): 
 /** Resolves customerId / marketplace / a usable Echo from the account. */
 export async function accountContext(
   alexa: AlexaRemote,
-  locale = "de-DE",
+  locale = process.env.ALEXA_MCP_ACCEPT_LANGUAGE ?? "de-DE",
   marketplaceId = process.env.ALEXA_MCP_MARKETPLACE_ID ?? "A1PA6795UKMFR9",
 ): Promise<AccountContext> {
   const res: any = await call((cb) => alexa.getDevices(cb));
@@ -150,11 +150,11 @@ export function buildTrigger(spec: TriggerSpec, ctx: AccountContext): any {
   // schedule
   const [h, m] = spec.time.split(":");
   const triggerTime = `${h.padStart(2, "0")}${(m ?? "00").padStart(2, "0")}00`;
-  const recurrence = spec.days?.length
-    ? `RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=${spec.days.join(",")}`
-    : "RRULE:FREQ=DAILY;INTERVAL=1";
+  // The app stores "every day" as WEEKLY with all seven days; FREQ=DAILY is rejected.
+  const days = spec.days?.length ? spec.days : ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+  const recurrence = `RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=${days.join(",")}`;
   const payload = {
-    schedule: { "@type": "RRULE", triggerTime, triggerTimes: [], timeZoneId: spec.timeZoneId ?? "Europe/Berlin", recurrence },
+    schedule: { "@type": "RRULE", triggerTime, triggerTimes: [], timeZoneId: spec.timeZoneId ?? process.env.ALEXA_MCP_TIMEZONE ?? "Europe/Berlin", recurrence },
     customer: { "@id": ctx.customerId, "@type": "ac:Person" },
   };
   return { "@type": T_JAVA, id: null, skillId: "amzn1.ask.1p.routines.schedule", type: "AbsoluteTimeSchedule", payload: JSON.stringify(payload) };
@@ -242,9 +242,15 @@ export async function writeRoutine(
 
   // PUT (update) is idempotent → safe to retry; POST (create) is NOT (a lost
   // response after a successful write would duplicate the routine).
-  return method === "PUT"
-    ? withBackoff(() => raw(alexa, method, path, JSON.stringify(body)))
-    : raw(alexa, method, path, JSON.stringify(body));
+  const res: any = method === "PUT"
+    ? await withBackoff(() => raw(alexa, method, path, JSON.stringify(body)))
+    : await raw(alexa, method, path, JSON.stringify(body));
+  // Amazon rejects invalid writes with HTTP 200 + {"message":"Input failed to validate."};
+  // surface that as an error instead of a silent success.
+  if (res && typeof res === "object" && !res.automationId && typeof res.message === "string") {
+    throw new Error(`Alexa rejected the routine write: ${res.message}`);
+  }
+  return res;
 }
 
 /**

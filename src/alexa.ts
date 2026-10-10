@@ -17,7 +17,8 @@ import { loadAuth, saveAuth, CookieData } from "./store.js";
 
 export interface AlexaConfig {
   amazonPage: string;        // e.g. "amazon.de"
-  acceptLanguage: string;    // e.g. "de-DE"
+  acceptLanguage: string;    // e.g. "de-DE" (Accept-Language header)
+  proxyLanguage: string;     // e.g. "en_US" (language= param on the proxy login page)
   proxyOwnIp: string;        // IP/host the browser reaches the proxy at
   proxyPort: number;
   proxyListenBind?: string;  // "0.0.0.0" to be reachable from other devices
@@ -30,6 +31,7 @@ export function defaultConfig(): AlexaConfig {
   return {
     amazonPage: process.env.ALEXA_MCP_AMAZON_PAGE ?? "amazon.de",
     acceptLanguage: process.env.ALEXA_MCP_ACCEPT_LANGUAGE ?? "de-DE",
+    proxyLanguage: process.env.ALEXA_MCP_PROXY_LANGUAGE ?? "en_US",
     proxyOwnIp: process.env.ALEXA_MCP_PROXY_IP ?? "127.0.0.1",
     proxyPort: Number(process.env.ALEXA_MCP_PROXY_PORT ?? 3456),
     proxyListenBind: process.env.ALEXA_MCP_PROXY_BIND ?? "0.0.0.0",
@@ -116,6 +118,7 @@ export function initAlexa(
         logger: cfg.logger,
         amazonPage: cfg.amazonPage,
         acceptLanguage: cfg.acceptLanguage,
+        amazonPageProxyLanguage: cfg.proxyLanguage,
         usePushConnection: cfg.usePushConnection,
         cookieRefreshInterval: cfg.cookieRefreshIntervalMs,
       } as any,
