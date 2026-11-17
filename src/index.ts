@@ -12,7 +12,7 @@ import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
 import { writeRoutine, setRoutineEnabled, type TriggerSpec } from "./routines.js";
-import { flattenAppliances, collectRoutineTargets } from "./util.js";
+import { flattenAppliances, collectRoutineTargets, findDanglingTargets } from "./util.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
 
@@ -245,11 +245,12 @@ server.registerTool(
   async () => {
     try {
       const alexa = await getAlexa();
-      const [devRaw, ents, groups, routines] = await Promise.all([
+      const [devRaw, ents, groups, routines, echos] = await Promise.all([
         call<any>((cb) => alexa.getSmarthomeDevices(cb)),
         call<any>((cb) => alexa.getSmarthomeEntities(cb)),
         call<any>((cb) => alexa.getSmarthomeGroups(cb)),
         call<any>((cb) => alexa.getAutomationRoutines(2000, cb)),
+        call<any>((cb) => alexa.getDevices(cb)),
       ]);
 
       // Build the universe of valid target ids: appliances (applianceId +
@@ -266,32 +267,14 @@ server.registerTool(
         for (const k of ["groupId", "entityId", "applianceId", "id"]) if (g?.[k]) valid.add(g[k]);
       }
 
-      // Targets that are placeholders / skill ids are not device references.
-      const isSpecial = (t?: string) => !t || /^ALEXA_|CURRENT|^amzn1\./i.test(t);
-      const collectTargets = (r: any) => {
-        const out: { target: string; op: string }[] = [];
-        const walk = (n: any) => {
-          if (!n || typeof n !== "object") return;
-          if (String(n["@type"] || "").endsWith("OpaquePayloadOperationNode")) {
-            const p = n.operationPayload || {};
-            if (p.target) {
-              out.push({ target: p.target, op: (p.operations || []).map((o: any) => o.type).join(",") || n.type });
-            }
-          }
-          for (const k of ["startNode", "nodesToExecute", "nodes"]) {
-            const v = n[k];
-            if (Array.isArray(v)) v.forEach(walk);
-            else if (v) walk(v);
-          }
-        };
-        walk(r.sequence?.startNode);
-        return out;
-      };
+      // Echo serials, for object targets (announcements to specific devices).
+      const serials = new Set<string>();
+      for (const d of echos?.devices ?? []) if (d?.serialNumber) serials.add(d.serialNumber);
 
       const rList = Array.isArray(routines) ? routines : [];
       const broken = [];
       for (const r of rList) {
-        const dangling = collectTargets(r).filter((t) => !isSpecial(t.target) && !valid.has(t.target));
+        const dangling = findDanglingTargets(r, valid, serials);
         if (dangling.length) {
           broken.push({ name: r.name, automationId: r.automationId, status: r.status, dangling });
         }
