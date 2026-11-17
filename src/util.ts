@@ -20,14 +20,32 @@ export function flattenAppliances(root: unknown): any[] {
   return [...m.values()];
 }
 
-/** Collects all device-target ids referenced by a routine's action sequence. */
-export function collectRoutineTargets(routine: any): { target: string; op: string }[] {
-  const out: { target: string; op: string }[] = [];
+/**
+ * A device reference found in a routine action.
+ * - `smarthome`: `operationPayload.target` is an applianceId / entityId / groupId string.
+ * - `echo`: an Echo serial number from an object target such as AlexaAnnouncement's
+ *   `{customerId, devices: [{deviceSerialNumber, deviceTypeId}]}`.
+ */
+export type RoutineTarget = { kind: "smarthome" | "echo"; target: string; op: string };
+
+/** Collects all device references in a routine's action sequence. */
+export function collectRoutineTargets(routine: any): RoutineTarget[] {
+  const out: RoutineTarget[] = [];
   const walk = (n: any) => {
     if (!n || typeof n !== "object") return;
     if (String(n["@type"] || "").endsWith("OpaquePayloadOperationNode")) {
       const p = n.operationPayload || {};
-      if (p.target) out.push({ target: p.target, op: (p.operations || []).map((o: any) => o.type).join(",") || n.type });
+      const op = (p.operations || []).map((o: any) => o.type).join(",") || n.type;
+      if (typeof p.target === "string" && p.target) {
+        out.push({ kind: "smarthome", target: p.target, op });
+      } else if (p.target && typeof p.target === "object") {
+        // Object target: customerId alone means all devices; `devices` names Echos.
+        for (const d of Array.isArray(p.target.devices) ? p.target.devices : []) {
+          if (typeof d?.deviceSerialNumber === "string" && d.deviceSerialNumber) {
+            out.push({ kind: "echo", target: d.deviceSerialNumber, op });
+          }
+        }
+      }
     }
     for (const k of ["startNode", "nodesToExecute", "nodes"]) {
       const v = n[k];
@@ -37,4 +55,22 @@ export function collectRoutineTargets(routine: any): { target: string; op: strin
   };
   walk(routine?.sequence?.startNode);
   return out;
+}
+
+/** Placeholders (ALEXA_CURRENT_DSN, …) and skill/automation ids are not device references. */
+const isPlaceholderTarget = (t: string) => /^ALEXA_|CURRENT|^amzn1\./i.test(t);
+
+/**
+ * Returns the routine's device references that do not resolve: smart-home targets
+ * missing from `validIds`, and Echo serials missing from `validSerials`.
+ */
+export function findDanglingTargets(
+  routine: any,
+  validIds: Set<string>,
+  validSerials: Set<string>,
+): RoutineTarget[] {
+  return collectRoutineTargets(routine).filter((t) => {
+    if (isPlaceholderTarget(t.target)) return false;
+    return t.kind === "echo" ? !validSerials.has(t.target) : !validIds.has(t.target);
+  });
 }
