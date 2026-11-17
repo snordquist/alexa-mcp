@@ -71,6 +71,10 @@ export function findDanglingTargets(
 ): RoutineTarget[] {
   return collectRoutineTargets(routine).filter((t) => {
     if (isPlaceholderTarget(t.target)) return false;
+    if (t.kind === "echo" && validSerials.size === 0) {
+      // An empty device list is more likely a bad API response than an account with no Echos.
+      throw new Error(`Routine "${routine?.name}" targets Echo ${t.target}, but getDevices returned no devices`);
+    }
     return t.kind === "echo" ? !validSerials.has(t.target) : !validIds.has(t.target);
   });
 }

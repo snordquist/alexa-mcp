@@ -270,7 +270,6 @@ server.registerTool(
       // Echo serials, for object targets (announcements to specific devices).
       const serials = new Set<string>();
       for (const d of echos?.devices ?? []) if (d?.serialNumber) serials.add(d.serialNumber);
-      if (serials.size === 0) throw new Error("getDevices returned no devices; cannot check Echo targets");
 
       const rList = Array.isArray(routines) ? routines : [];
       const broken = [];

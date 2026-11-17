@@ -127,3 +127,13 @@ test("findDanglingTargets: smarthome target missing from valid ids is dangling; 
   const d = findDanglingTargets(r, new Set(["dev-1"]), new Set());
   assert.deepEqual(d.map((x) => x.target), ["dev-GONE"]);
 });
+
+test("findDanglingTargets: empty Echo list is fine when no routine targets an Echo", () => {
+  const r = withNodes(announcement({ customerId: "C1" }), ...routine("R", "dev-1").sequence.startNode.nodesToExecute);
+  assert.deepEqual(findDanglingTargets(r, new Set(["dev-1"]), new Set()), []);
+});
+
+test("findDanglingTargets: empty Echo list throws when a routine targets an Echo", () => {
+  const r = withNodes(announcement({ customerId: "C1", devices: [{ deviceSerialNumber: "SER1", deviceTypeId: "T1" }] }));
+  assert.throws(() => findDanglingTargets(r, new Set(), new Set()), /getDevices returned no devices/);
+});
